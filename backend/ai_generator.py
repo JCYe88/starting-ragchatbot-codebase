@@ -86,6 +86,8 @@ Provide only the direct answer to what was asked.
             return self._handle_tool_execution(response, api_params, tool_manager)
         
         # Return direct response
+        if not response.content:
+            raise ValueError(f"Model returned empty content (stop_reason: {response.stop_reason})")
         return response.content[0].text
     
     def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
@@ -134,4 +136,6 @@ Provide only the direct answer to what was asked.
         
         # Get final response
         final_response = self.client.messages.create(**final_params)
+        if not final_response.content:
+            raise ValueError(f"Model returned empty content after tool execution (stop_reason: {final_response.stop_reason})")
         return final_response.content[0].text
