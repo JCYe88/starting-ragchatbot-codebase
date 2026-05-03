@@ -518,6 +518,27 @@ details[open] .suggested-header::before {
     transform: rotate(90deg);
 }
 
+.new-chat-btn {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    padding: 0.5rem 0;
+    border: none;
+    background: none;
+    outline: none;
+    width: 100%;
+    text-align: left;
+    transition: color 0.2s ease;
+}
+
+.new-chat-btn:hover,
+.new-chat-btn:focus {
+    color: var(--primary-color);
+}
+
 /* Course Stats in Sidebar */
 .course-stats {
     display: flex;

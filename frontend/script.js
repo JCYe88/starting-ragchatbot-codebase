@@ -30,6 +30,9 @@ function setupEventListeners() {
     });
     
     
+    // New chat button
+    document.getElementById('newChatBtn').addEventListener('click', startNewChat);
+
     // Suggested questions
     document.querySelectorAll('.suggested-item').forEach(button => {
         button.addEventListener('click', (e) => {
@@ -150,6 +153,13 @@ function escapeHtml(text) {
 }
 
 // Removed removeMessage function - no longer needed since we handle loading differently
+
+async function startNewChat() {
+    if (currentSessionId) {
+        fetch(`${API_URL}/session/${currentSessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    createNewSession();
+}
 
 async function createNewSession() {
     currentSessionId = null;

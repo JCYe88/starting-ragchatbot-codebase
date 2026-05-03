@@ -113,6 +113,45 @@ class CourseSearchTool(Tool):
 
         return "\n\n".join(formatted)
 
+class CourseOutlineTool(Tool):
+    """Tool for retrieving a course outline: title, link, and lesson list"""
+
+    def __init__(self, vector_store: VectorStore):
+        self.store = vector_store
+
+    def get_tool_definition(self) -> Dict[str, Any]:
+        return {
+            "name": "get_course_outline",
+            "description": "Get the complete outline of a course: title, course link, and all lessons with their numbers and titles",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "course_name": {
+                        "type": "string",
+                        "description": "Course title to look up (partial matches work, e.g. 'MCP', 'Introduction')"
+                    }
+                },
+                "required": ["course_name"]
+            }
+        }
+
+    def execute(self, course_name: str) -> str:
+        outline = self.store.get_course_outline(course_name)
+        if not outline:
+            return f"No course found matching '{course_name}'."
+
+        lines = [f"Course: {outline['title']}"]
+        if outline.get('course_link'):
+            lines.append(f"Link: {outline['course_link']}")
+        lines.append("\nLessons:")
+        for lesson in outline['lessons']:
+            num = lesson.get('lesson_number', '')
+            title = lesson.get('lesson_title', '')
+            lines.append(f"  Lesson {num}: {title}")
+
+        return "\n".join(lines)
+
+
 class ToolManager:
     """Manages available tools for the AI"""
     
