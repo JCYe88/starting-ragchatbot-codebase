@@ -39,3 +39,13 @@ Prettier was run on all three existing frontend files. Changes were stylistic on
 - **`index.html`** — indentation changed from 4-space to 2-space, void elements gained self-closing slashes (`<meta ... />`), long attribute lines were wrapped
 - **`style.css`** — minor whitespace normalisation (trailing spaces, consistent blank lines)
 - **`script.js`** — double-quoted strings converted to single quotes, trailing commas added to multi-line structures
+
+## Backend Testing Infrastructure
+
+No frontend files were modified in this feature.
+
+This feature added backend testing infrastructure only:
+
+- `backend/tests/conftest.py` — expanded with shared fixtures (`mock_rag_system`, `test_app`, `client`) used by the new API endpoint tests
+- `backend/tests/test_api_endpoints.py` — 22 new tests covering POST /api/query, GET /api/courses, and DELETE /api/session/{id}
+- `pyproject.toml` — added `[tool.pytest.ini_options]` with `testpaths`, `addopts`, and `markers` configuration
