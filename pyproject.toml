@@ -18,3 +18,10 @@ dependencies = [
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests requiring real API keys (deselect with '-m not integration')",
+]
