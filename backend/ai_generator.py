@@ -3,14 +3,16 @@ from typing import List, Optional, Dict, Any
 
 class AIGenerator:
     """Handles interactions with Anthropic's Claude API for generating responses"""
-    
+
+    MAX_TOOL_ROUNDS = 2
+
     # Static system prompt to avoid rebuilding on each call
     SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to tools for course information.
 
 Tool Usage:
 - **Outline or structure queries** ("what lessons does X cover?", "show me the outline of X", "what topics are in X?"): use `get_course_outline` — return the course title, course link, and every lesson number and title
 - **Content or concept queries**: use `search_course_content` to find relevant material
-- **One tool call per query maximum**
+- You may make up to 2 sequential tool calls when the first result is insufficient to fully answer the question. Use a second tool call only when the first result reveals a more specific query is needed (e.g., you retrieved a course outline and now need to search for related content). Do not use a second tool call by default.
 - Synthesize tool results into accurate, fact-based responses
 - If a tool yields no results, state this clearly without offering alternatives
 
@@ -80,62 +82,81 @@ Provide only the direct answer to what was asked.
         
         # Get response from Claude
         response = self.client.messages.create(**api_params)
-        
+
         # Handle tool execution if needed
         if response.stop_reason == "tool_use" and tool_manager:
-            return self._handle_tool_execution(response, api_params, tool_manager)
-        
+            return self._run_tool_loop(response, api_params, tool_manager)
+
         # Return direct response
         if not response.content:
             raise ValueError(f"Model returned empty content (stop_reason: {response.stop_reason})")
         return response.content[0].text
-    
-    def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
-        """
-        Handle execution of tool calls and get follow-up response.
-        
-        Args:
-            initial_response: The response containing tool use requests
-            base_params: Base API parameters
-            tool_manager: Manager to execute tools
-            
-        Returns:
-            Final response text after tool execution
-        """
-        # Start with existing messages
-        messages = base_params["messages"].copy()
-        
-        # Add AI's tool use response
-        messages.append({"role": "assistant", "content": initial_response.content})
-        
-        # Execute all tool calls and collect results
-        tool_results = []
-        for content_block in initial_response.content:
-            if content_block.type == "tool_use":
-                tool_result = tool_manager.execute_tool(
-                    content_block.name, 
-                    **content_block.input
-                )
-                
-                tool_results.append({
+
+    def _execute_tool_calls(self, response, tool_manager) -> list:
+        """Execute all tool_use blocks in a response, returning tool_result dicts."""
+        results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            try:
+                content = tool_manager.execute_tool(block.name, **block.input)
+            except Exception as e:
+                results.append({
                     "type": "tool_result",
-                    "tool_use_id": content_block.id,
-                    "content": tool_result
+                    "tool_use_id": block.id,
+                    "is_error": True,
+                    "content": str(e),
                 })
-        
-        # Add tool results as single message
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
-        
-        # Prepare final API call without tools
-        final_params = {
+                continue
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": content,
+            })
+        return results
+
+    def _run_tool_loop(self, initial_response, base_params: Dict[str, Any], tool_manager) -> str:
+        """
+        Drive up to MAX_TOOL_ROUNDS of sequential tool calls, then return the final answer.
+
+        Each round processes a tool_use response. Between rounds (when more rounds remain),
+        a new API call with tools is made so Claude can chain another tool call. After all
+        rounds are exhausted, one final no-tools call synthesizes the answer.
+
+        Terminates early (without the final call) if Claude returns text between rounds.
+        """
+        messages = base_params["messages"].copy()
+        system_content = base_params["system"]
+        tools = base_params.get("tools", [])
+        response = initial_response
+
+        for round_num in range(self.MAX_TOOL_ROUNDS):
+            tool_results = self._execute_tool_calls(response, tool_manager)
+            messages.append({"role": "assistant", "content": response.content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+            # Between rounds: make another with-tools call so Claude can chain
+            if round_num < self.MAX_TOOL_ROUNDS - 1:
+                response = self.client.messages.create(
+                    **self.base_params,
+                    messages=messages,
+                    system=system_content,
+                    tools=tools,
+                    tool_choice={"type": "auto"},
+                )
+                if response.stop_reason != "tool_use":
+                    # Claude answered directly — no final call needed
+                    if not response.content:
+                        raise ValueError(f"Model returned empty content (stop_reason: {response.stop_reason})")
+                    return response.content[0].text
+
+        # All rounds exhausted — final synthesis call without tools
+        final_response = self.client.messages.create(
             **self.base_params,
-            "messages": messages,
-            "system": base_params["system"]
-        }
-        
-        # Get final response
-        final_response = self.client.messages.create(**final_params)
+            messages=messages,
+            system=system_content,
+        )
         if not final_response.content:
             raise ValueError(f"Model returned empty content after tool execution (stop_reason: {final_response.stop_reason})")
         return final_response.content[0].text

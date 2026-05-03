@@ -172,12 +172,13 @@ class TestToolUsePath:
         )
         assert gen.client.messages.create.call_count == 2
 
-    def test_second_api_call_does_not_include_tools(self):
-        """Second call must omit tools to prevent an infinite tool-use loop."""
+    def test_final_api_call_omits_tools(self):
+        """The last API call (final synthesis after max rounds) must omit tools."""
         gen = _make_generator()
         mgr, _ = _search_manager()
         gen.client.messages.create.side_effect = [
-            _tool_use_response("search_course_content", "tu_04", {"query": "x"}),
+            _tool_use_response("search_course_content", "tu_04a", {"query": "x"}),
+            _tool_use_response("search_course_content", "tu_04b", {"query": "y"}),
             _text_response("done"),
         ]
         gen.generate_response(
@@ -185,10 +186,9 @@ class TestToolUsePath:
             tools=mgr.get_tool_definitions(),
             tool_manager=mgr,
         )
-        second_call_kwargs = gen.client.messages.create.call_args_list[1][1]
-        assert "tools" not in second_call_kwargs, (
-            "Second API call must NOT include tools. "
-            "If it does, Claude can loop indefinitely on tool calls."
+        last_call_kwargs = gen.client.messages.create.call_args_list[-1][1]
+        assert "tools" not in last_call_kwargs, (
+            "Final API call must NOT include tools to prevent an infinite tool-use loop."
         )
 
     def test_tool_result_present_in_second_api_call_messages(self):
@@ -251,6 +251,156 @@ class TestToolUsePath:
         assert len(assistant_msgs) == 1
         # The assistant message content must reference the original tool_use block
         assert assistant_msgs[0]["content"] is first_resp.content
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Two-round tool use — sequential chaining
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTwoRoundToolUse:
+
+    def test_two_tool_rounds_makes_three_api_calls(self):
+        gen = _make_generator()
+        mgr, _ = _search_manager()
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_r1", {"query": "outline"}),
+            _tool_use_response("search_course_content", "tu_r2", {"query": "content"}),
+            _text_response("Final answer."),
+        ]
+        gen.generate_response(
+            query="complex query",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert gen.client.messages.create.call_count == 3
+
+    def test_final_answer_returned_after_two_rounds(self):
+        gen = _make_generator()
+        mgr, _ = _search_manager()
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_r1", {"query": "q1"}),
+            _tool_use_response("search_course_content", "tu_r2", {"query": "q2"}),
+            _text_response("Answer."),
+        ]
+        result = gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert result == "Answer."
+
+    def test_both_tools_executed_in_two_rounds(self):
+        gen = _make_generator()
+        mgr, mock_tool = _search_manager()
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_r1", {"query": "round1"}),
+            _tool_use_response("search_course_content", "tu_r2", {"query": "round2"}),
+            _text_response("done"),
+        ]
+        gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert mock_tool.execute.call_count == 2
+
+    def test_max_rounds_caps_at_two(self):
+        """A third tool_use response must never be processed — loop caps at 2 rounds."""
+        gen = _make_generator()
+        mgr, mock_tool = _search_manager()
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_r1", {"query": "q1"}),
+            _tool_use_response("search_course_content", "tu_r2", {"query": "q2"}),
+            _text_response("done"),
+            _tool_use_response("search_course_content", "tu_r3", {"query": "q3"}),  # never reached
+        ]
+        gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert gen.client.messages.create.call_count == 3
+        assert mock_tool.execute.call_count == 2
+
+    def test_early_termination_no_extra_call(self):
+        """One tool round followed by a direct text answer must make exactly 2 API calls."""
+        gen = _make_generator()
+        mgr, _ = _search_manager()
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_r1", {"query": "q"}),
+            _text_response("Direct answer."),
+        ]
+        result = gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert gen.client.messages.create.call_count == 2
+        assert result == "Direct answer."
+
+    def test_tool_error_does_not_raise_continues_to_answer(self):
+        """A tool execution exception must not propagate — loop continues to final answer."""
+        gen = _make_generator()
+        mgr, mock_tool = _search_manager()
+        mock_tool.execute.side_effect = RuntimeError("DB unavailable")
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "tu_err", {"query": "q"}),
+            _text_response("Sorry, an error occurred."),
+        ]
+        result = gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        assert gen.client.messages.create.call_count == 2
+        assert result == "Sorry, an error occurred."
+
+    def test_tool_error_sent_as_is_error_block(self):
+        """On tool execution error, an is_error tool_result block must be in the follow-up call."""
+        gen = _make_generator()
+        mgr, mock_tool = _search_manager()
+        mock_tool.execute.side_effect = RuntimeError("timeout")
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "err_id", {"query": "q"}),
+            _text_response("ok"),
+        ]
+        gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        second_msgs = gen.client.messages.create.call_args_list[1][1]["messages"]
+        all_content = []
+        for msg in second_msgs:
+            c = msg.get("content")
+            if isinstance(c, list):
+                all_content.extend(c)
+        error_results = [b for b in all_content if isinstance(b, dict) and b.get("is_error")]
+        assert len(error_results) == 1
+        assert error_results[0]["tool_use_id"] == "err_id"
+
+    def test_two_round_message_chain_has_two_tool_results(self):
+        """After two rounds, the final API call's messages must contain two tool_result blocks."""
+        gen = _make_generator()
+        mgr, _ = _search_manager("result data")
+        gen.client.messages.create.side_effect = [
+            _tool_use_response("search_course_content", "id_r1", {"query": "q1"}),
+            _tool_use_response("search_course_content", "id_r2", {"query": "q2"}),
+            _text_response("done"),
+        ]
+        gen.generate_response(
+            query="q",
+            tools=mgr.get_tool_definitions(),
+            tool_manager=mgr,
+        )
+        final_msgs = gen.client.messages.create.call_args_list[-1][1]["messages"]
+        all_content = []
+        for msg in final_msgs:
+            c = msg.get("content")
+            if isinstance(c, list):
+                all_content.extend(c)
+        tool_results = [b for b in all_content if isinstance(b, dict) and b.get("type") == "tool_result"]
+        assert len(tool_results) == 2
 
 
 # ══════════════════════════════════════════════════════════════════════════════
